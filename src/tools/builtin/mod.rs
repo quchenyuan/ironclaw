@@ -9,6 +9,7 @@ mod json;
 mod memory;
 mod message;
 pub mod path_utils;
+mod restart;
 pub mod routine;
 pub mod secrets_tools;
 pub(crate) mod shell;
@@ -28,6 +29,7 @@ pub use job::{
 pub use json::JsonTool;
 pub use memory::{MemoryReadTool, MemorySearchTool, MemoryTreeTool, MemoryWriteTool};
 pub use message::MessageTool;
+pub use restart::RestartTool;
 pub use routine::{
     RoutineCreateTool, RoutineDeleteTool, RoutineHistoryTool, RoutineListTool, RoutineUpdateTool,
 };

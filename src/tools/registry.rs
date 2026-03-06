@@ -68,6 +68,8 @@ const PROTECTED_TOOL_NAMES: &[&str] = &[
     "skill_install",
     "skill_remove",
     "message",
+    "web_fetch",
+    "restart",
 ];
 
 /// Registry of available tools.
@@ -155,7 +157,8 @@ impl ToolRegistry {
 
     /// Get a tool by name.
     pub async fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.read().await.get(name).cloned()
+        let tools = self.tools.read().await;
+        tools.get(name).map(Arc::clone)
     }
 
     /// Check if a tool exists.
@@ -209,11 +212,12 @@ impl ToolRegistry {
         let tools = self.tools.read().await;
         names
             .iter()
-            .filter_map(|name| tools.get(*name))
-            .map(|tool| ToolDefinition {
-                name: tool.name().to_string(),
-                description: tool.description().to_string(),
-                parameters: tool.parameters_schema(),
+            .filter_map(|name| {
+                tools.get(*name).map(|tool| ToolDefinition {
+                    name: tool.name().to_string(),
+                    description: tool.description().to_string(),
+                    parameters: tool.parameters_schema(),
+                })
             })
             .collect()
     }
