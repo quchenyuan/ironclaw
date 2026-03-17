@@ -406,10 +406,12 @@ impl AliyunProvider {
                     .map(|arr| {
                         arr.iter()
                             .filter_map(|tc| {
+                                let arguments_str = tc.get("function")?.get("arguments")?.as_str()?;
+                                let arguments = serde_json::from_str(arguments_str).ok()?;
                                 Some(ToolCall {
                                     id: tc.get("id")?.as_str()?.to_string(),
                                     name: tc.get("function")?.get("name")?.as_str()?.to_string(),
-                                    arguments: tc.get("function")?.get("arguments")?.clone(),
+                                    arguments,
                                 })
                             })
                             .collect()
