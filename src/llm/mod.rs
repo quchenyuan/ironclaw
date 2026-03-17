@@ -8,12 +8,11 @@
 //! - **OpenAI-compatible**: Any endpoint that speaks the OpenAI API
 //! - **AWS Bedrock**: Native Converse API via aws-sdk-bedrockruntime
 
+mod aliyun;
 mod anthropic_oauth;
 #[cfg(feature = "bedrock")]
 mod bedrock;
 pub mod circuit_breaker;
-pub(crate) mod codex_auth;
-mod codex_chatgpt;
 pub mod config;
 pub mod costs;
 pub mod error;
@@ -35,9 +34,10 @@ pub mod models;
 pub mod reasoning_models;
 pub mod vision_models;
 
+pub use aliyun::AliyunProvider;
 pub use circuit_breaker::{CircuitBreakerConfig, CircuitBreakerProvider};
 pub use config::{
-    BedrockConfig, CacheRetention, LlmConfig, NearAiConfig, OAUTH_PLACEHOLDER,
+    AliyunConfig, BedrockConfig, CacheRetention, LlmConfig, NearAiConfig, OAUTH_PLACEHOLDER,
     RegistryProviderConfig,
 };
 pub use error::LlmError;
@@ -97,6 +97,21 @@ pub async fn create_llm_provider(
         }
     }
 
+    // Aliyun Coding Plan - custom provider with specific HTTP configuration
+    if config.backend == "aliyun" || config.backend == "coding_plan" {
+        let aliyun_config = config.aliyun.as_ref().ok_or_else(|| LlmError::AuthFailed {
+            provider: "aliyun".to_string(),
+        })?;
+
+        tracing::debug!(
+            model = %aliyun_config.model,
+            base_url = %aliyun_config.base_url,
+            "Using Aliyun Coding Plan provider"
+        );
+
+        return Ok(Arc::new(AliyunProvider::new(aliyun_config.clone())?));
+    }
+
     let reg_config = config
         .provider
         .as_ref()
@@ -104,7 +119,7 @@ pub async fn create_llm_provider(
             provider: config.backend.clone(),
         })?;
 
-    create_registry_provider(reg_config, timeout)
+    create_registry_provider(reg_config)
 }
 
 /// Create an LLM provider from a `NearAiConfig` directly.
@@ -142,48 +157,12 @@ pub fn create_llm_provider_with_config(
 /// `create_*_provider` functions.
 fn create_registry_provider(
     config: &RegistryProviderConfig,
-    request_timeout_secs: u64,
 ) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    // Codex ChatGPT mode: use the Responses API provider
-    if config.is_codex_chatgpt {
-        return create_codex_chatgpt_from_registry(config, request_timeout_secs);
-    }
-
     match config.protocol {
         ProviderProtocol::OpenAiCompletions => create_openai_compat_from_registry(config),
         ProviderProtocol::Anthropic => create_anthropic_from_registry(config),
         ProviderProtocol::Ollama => create_ollama_from_registry(config),
     }
-}
-
-fn create_codex_chatgpt_from_registry(
-    config: &RegistryProviderConfig,
-    request_timeout_secs: u64,
-) -> Result<Arc<dyn LlmProvider>, LlmError> {
-    let api_key = config
-        .api_key
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| LlmError::AuthFailed {
-            provider: "codex_chatgpt".to_string(),
-        })?;
-
-    tracing::info!(
-        configured_model = %config.model,
-        base_url = %config.base_url,
-        "Using Codex ChatGPT provider (Responses API) — model detection deferred to first call"
-    );
-
-    let provider = codex_chatgpt::CodexChatGptProvider::with_lazy_model(
-        &config.base_url,
-        api_key,
-        &config.model,
-        config.refresh_token.clone(),
-        config.auth_path.clone(),
-        request_timeout_secs,
-    );
-
-    Ok(Arc::new(provider))
 }
 
 #[cfg(feature = "bedrock")]
@@ -201,7 +180,6 @@ async fn create_bedrock_provider(config: &LlmConfig) -> Result<Arc<dyn LlmProvid
         br.region,
         provider.active_model_name(),
     );
-
     Ok(Arc::new(provider))
 }
 
@@ -376,61 +354,32 @@ fn create_ollama_from_registry(
 
 /// Create a cheap/fast LLM provider for lightweight tasks (heartbeat, routing, evaluation).
 ///
-/// Resolution order:
-/// 1. `LLM_CHEAP_MODEL` (generic, works with any backend)
-/// 2. `NEARAI_CHEAP_MODEL` (NearAI-only, backward compatibility)
-///
-/// Returns `None` if no cheap model is configured.
+/// Uses `NEARAI_CHEAP_MODEL` if set, otherwise falls back to the main provider.
+/// Currently only supports NEAR AI backend.
 pub fn create_cheap_llm_provider(
     config: &LlmConfig,
     session: Arc<SessionManager>,
 ) -> Result<Option<Arc<dyn LlmProvider>>, LlmError> {
-    let Some(cheap_model) = config.cheap_model_name() else {
+    let Some(ref cheap_model) = config.nearai.cheap_model else {
         return Ok(None);
     };
 
-    create_cheap_provider_for_backend(config, session, cheap_model)
-}
-
-/// Create a cheap provider for a specific backend.
-///
-/// Handles backend-specific provider construction:
-/// - `nearai` — clones NearAiConfig, swaps model, uses `create_llm_provider_with_config`
-/// - `bedrock` — returns error (smart routing not yet supported)
-/// - All others — clones `RegistryProviderConfig`, swaps model, uses `create_registry_provider`
-fn create_cheap_provider_for_backend(
-    config: &LlmConfig,
-    session: Arc<SessionManager>,
-    cheap_model: &str,
-) -> Result<Option<Arc<dyn LlmProvider>>, LlmError> {
-    if config.backend == "nearai" {
-        let mut cheap_config = config.nearai.clone();
-        cheap_config.model = cheap_model.to_string();
-        let provider =
-            create_llm_provider_with_config(&cheap_config, session, config.request_timeout_secs)?;
-        return Ok(Some(provider));
-    }
-
-    if config.backend == "bedrock" {
-        return Err(LlmError::RequestFailed {
-            provider: "bedrock".to_string(),
-            reason: "Smart routing with cheap model is not supported for Bedrock yet".to_string(),
-        });
-    }
-
-    // Registry-based provider: clone config and swap model
-    let reg_config = config.provider.as_ref().ok_or_else(|| LlmError::RequestFailed {
-        provider: config.backend.clone(),
-        reason: format!(
-            "Cannot create cheap provider for backend '{}': no registry provider config available",
+    if config.backend != "nearai" {
+        tracing::warn!(
+            "NEARAI_CHEAP_MODEL is set but LLM_BACKEND is '{}', not nearai. \
+             Cheap model setting will be ignored.",
             config.backend
-        ),
-    })?;
+        );
+        return Ok(None);
+    }
 
-    let mut cheap_reg_config = reg_config.clone();
-    cheap_reg_config.model = cheap_model.to_string();
-    let provider = create_registry_provider(&cheap_reg_config, config.request_timeout_secs)?;
-    Ok(Some(provider))
+    let mut cheap_config = config.nearai.clone();
+    cheap_config.model = cheap_model.clone();
+
+    Ok(Some(Arc::new(NearAiChatProvider::new(
+        cheap_config,
+        session,
+    )?)))
 }
 
 /// Build the full LLM provider chain with all configured wrappers.
@@ -478,15 +427,14 @@ pub async fn build_provider_chain(
     };
 
     // 2. Smart routing (cheap/primary split)
-    let llm: Arc<dyn LlmProvider> = if let Some(cheap_model) = config.cheap_model_name() {
-        let cheap = create_cheap_provider_for_backend(config, session.clone(), cheap_model)?
-            .ok_or_else(|| LlmError::RequestFailed {
-                provider: config.backend.clone(),
-                reason: format!(
-                    "Failed to create cheap provider for model '{cheap_model}' on backend '{}'",
-                    config.backend
-                ),
-            })?;
+    let llm: Arc<dyn LlmProvider> = if let Some(ref cheap_model) = config.nearai.cheap_model {
+        let mut cheap_config = config.nearai.clone();
+        cheap_config.model = cheap_model.clone();
+        let cheap = create_llm_provider_with_config(
+            &cheap_config,
+            session.clone(),
+            config.request_timeout_secs,
+        )?;
         let cheap: Arc<dyn LlmProvider> = if retry_config.max_retries > 0 {
             Arc::new(RetryProvider::new(cheap, retry_config.clone()))
         } else {
@@ -501,7 +449,7 @@ pub async fn build_provider_chain(
             llm,
             cheap,
             SmartRoutingConfig {
-                cascade_enabled: config.smart_routing_cascade,
+                cascade_enabled: config.nearai.smart_routing_cascade,
                 ..SmartRoutingConfig::default()
             },
         ))
@@ -630,8 +578,6 @@ mod tests {
             provider: None,
             bedrock: None,
             request_timeout_secs: 120,
-            cheap_model: None,
-            smart_routing_cascade: true,
         }
     }
 
@@ -646,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_cheap_llm_provider_creates_provider_with_nearai_cheap_model() {
+    fn test_create_cheap_llm_provider_creates_provider_when_configured() {
         let mut config = test_llm_config();
         config.nearai.cheap_model = Some("cheap-test-model".to_string());
 
@@ -660,26 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_cheap_llm_provider_generic_overrides_nearai() {
-        let mut config = test_llm_config();
-        config.nearai.cheap_model = Some("nearai-cheap".to_string());
-        config.cheap_model = Some("generic-cheap".to_string());
-
-        let session = Arc::new(SessionManager::new(SessionConfig::default()));
-        let result = create_cheap_llm_provider(&config, session);
-
-        assert!(result.is_ok());
-        let provider = result.unwrap();
-        assert!(provider.is_some());
-        assert_eq!(
-            provider.unwrap().model_name(),
-            "generic-cheap",
-            "LLM_CHEAP_MODEL should take priority over NEARAI_CHEAP_MODEL"
-        );
-    }
-
-    #[test]
-    fn test_create_cheap_llm_provider_nearai_cheap_ignored_for_non_nearai_backend() {
+    fn test_create_cheap_llm_provider_ignored_for_non_nearai_backend() {
         let mut config = test_llm_config();
         config.backend = "openai".to_string();
         config.nearai.cheap_model = Some("cheap-test-model".to_string());
@@ -688,48 +615,6 @@ mod tests {
         let result = create_cheap_llm_provider(&config, session);
 
         assert!(result.is_ok());
-        assert!(
-            result.unwrap().is_none(),
-            "NEARAI_CHEAP_MODEL should be ignored when backend is not nearai"
-        );
-    }
-
-    #[test]
-    fn test_create_cheap_llm_provider_bedrock_returns_error() {
-        let mut config = test_llm_config();
-        config.backend = "bedrock".to_string();
-        config.cheap_model = Some("cheap-model".to_string());
-
-        let session = Arc::new(SessionManager::new(SessionConfig::default()));
-        let result = create_cheap_llm_provider(&config, session);
-
-        assert!(
-            result.is_err(),
-            "Bedrock should return an error for cheap model"
-        );
-    }
-
-    #[test]
-    fn test_cheap_model_name_resolution() {
-        // Generic takes priority
-        let mut config = test_llm_config();
-        config.cheap_model = Some("generic".to_string());
-        config.nearai.cheap_model = Some("nearai".to_string());
-        assert_eq!(config.cheap_model_name(), Some("generic"));
-
-        // NearAI fallback when backend is nearai
-        let mut config = test_llm_config();
-        config.nearai.cheap_model = Some("nearai".to_string());
-        assert_eq!(config.cheap_model_name(), Some("nearai"));
-
-        // NearAI ignored for non-nearai backend
-        let mut config = test_llm_config();
-        config.backend = "openai".to_string();
-        config.nearai.cheap_model = Some("nearai".to_string());
-        assert_eq!(config.cheap_model_name(), None);
-
-        // None when nothing configured
-        let config = test_llm_config();
-        assert_eq!(config.cheap_model_name(), None);
+        assert!(result.unwrap().is_none());
     }
 }
