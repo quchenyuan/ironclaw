@@ -172,6 +172,10 @@ impl AliyunProvider {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         headers.insert(AUTHORIZATION, auth);
+        headers.insert(
+            reqwest::header::USER_AGENT,
+            HeaderValue::from_static("IronClaw/0.18.0 (compatible; Anthropic-API-Client)"),
+        );
 
         let response = self
             .client
