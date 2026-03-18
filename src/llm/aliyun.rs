@@ -78,6 +78,9 @@ impl AliyunProvider {
     }
 
     /// Convert IronClaw messages to API format.
+    /// Aliyun Coding Plan requires:
+    /// - tool messages must have tool_call_id
+    /// - tool_call_id must match the id in assistant's tool_calls
     fn convert_messages(&self, messages: &[ChatMessage]) -> Vec<serde_json::Value> {
         messages
             .iter()
@@ -89,6 +92,41 @@ impl AliyunProvider {
                     Role::Tool => "tool",
                 };
 
+                // Handle tool messages - must include tool_call_id
+                if role == "tool" {
+                    let tool_call_id = msg.tool_call_id.as_deref().unwrap_or("unknown");
+                    return serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": msg.content
+                    });
+                }
+
+                // Handle assistant messages with tool_calls
+                if role == "assistant" && msg.tool_calls.is_some() {
+                    let tool_calls_json: Vec<serde_json::Value> = msg.tool_calls.as_ref().unwrap()
+                        .iter()
+                        .map(|tc| {
+                            serde_json::json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.name,
+                                    "arguments": tc.arguments
+                                }
+                            })
+                        })
+                        .collect();
+                    
+                    let mut obj = serde_json::json!({
+                        "role": role,
+                        "content": msg.content
+                    });
+                    obj["tool_calls"] = serde_json::Value::Array(tool_calls_json);
+                    return obj;
+                }
+
+                // Regular messages
                 if msg.content_parts.is_empty() {
                     serde_json::json!({
                         "role": role,
@@ -153,16 +191,18 @@ impl AliyunProvider {
             body["temperature"] = serde_json::json!(temp);
         }
 
-        // Add tools if provided
+        // Add tools if provided (OpenAI function calling format)
         if let Some(tools) = tools {
             let tool_defs: Vec<serde_json::Value> = tools
                 .iter()
                 .map(|t| {
                     serde_json::json!({
-                        "type": "tool_use",
-                        "name": t.name,
-                        "description": t.description,
-                        "input_schema": t.parameters
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.parameters
+                        }
                     })
                 })
                 .collect();
