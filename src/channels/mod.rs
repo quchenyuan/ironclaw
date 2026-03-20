@@ -28,6 +28,7 @@
 //! See the [`wasm`] module for details.
 
 mod channel;
+pub mod dingtalk;
 mod http;
 mod manager;
 pub mod relay;
