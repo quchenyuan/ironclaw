@@ -39,7 +39,7 @@ eula = false
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 futures = "0.3"
 eventsource-stream = "0.2"
 

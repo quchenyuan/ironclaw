@@ -36,6 +36,10 @@ impl TokenManager {
         }
     }
 
+    pub fn app_secret(&self) -> &str {
+        &self.app_secret
+    }
+
     pub fn app_key(&self) -> &str {
         &self.app_key
     }

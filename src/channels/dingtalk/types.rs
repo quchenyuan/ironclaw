@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 /// Request body for token exchange.
 #[derive(Debug, Serialize)]
 pub struct TokenRequest {
+    #[serde(rename = "appKey")]
     pub appkey: String,
+    #[serde(rename = "appSecret")]
     pub appsecret: String,
 }
 

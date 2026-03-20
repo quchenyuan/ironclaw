@@ -360,6 +360,38 @@ async fn async_main() -> anyhow::Result<()> {
         }
     }
 
+    // Add DingTalk channel if enabled
+    if !cli.cli_only {
+        let dingtalk_enabled = std::env::var("DINGTALK_ENABLED")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        if dingtalk_enabled {
+            let dingtalk_config = ironclaw::channels::dingtalk::DingTalkConfig {
+                app_key: std::env::var("DINGTALK_CLIENT_ID").unwrap_or_default(),
+                app_secret: std::env::var("DINGTALK_CLIENT_SECRET").unwrap_or_default(),
+                robot_code: std::env::var("DINGTALK_ROBOT_CODE").unwrap_or_default(),
+                owner_id: config.owner_id.clone(),
+                dm_policy: std::env::var("DINGTALK_DM_POLICY")
+                    .unwrap_or_else(|_| "open".to_string()),
+                group_policy: std::env::var("DINGTALK_GROUP_POLICY")
+                    .unwrap_or_else(|_| "open".to_string()),
+                allow_from: Vec::new(),
+                group_allow_from: Vec::new(),
+                message_type: std::env::var("DINGTALK_MESSAGE_TYPE")
+                    .unwrap_or_else(|_| "text".to_string()),
+            };
+            match ironclaw::channels::dingtalk::DingTalkChannel::new(dingtalk_config).await {
+                Ok(ch) => {
+                    channel_names.push("dingtalk".to_string());
+                    channels.add(Box::new(ch)).await;
+                    tracing::info!("DingTalk channel enabled");
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create DingTalk channel");
+                }
+            }
+        }
+    }
     // Add Signal channel if configured and not CLI-only mode.
     if !cli.cli_only
         && let Some(ref signal_config) = config.channels.signal
