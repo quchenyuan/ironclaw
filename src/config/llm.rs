@@ -138,6 +138,7 @@ impl LlmConfig {
         };
         let is_aliyun = backend_lower == "aliyun" || backend_lower == "coding_plan";
 
+        let is_aliyun = backend_lower == "aliyun" || backend_lower == "coding_plan";
         // Resolve registry provider config (for non-NearAI, non-Bedrock, non-Codex backends)
         let provider = if is_nearai || is_bedrock || is_openai_codex || is_aliyun {
             None

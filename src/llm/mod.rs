@@ -108,6 +108,21 @@ pub async fn create_llm_provider(
         }
     }
 
+    // Aliyun Coding Plan - custom provider with specific HTTP configuration
+    if config.backend == "aliyun" || config.backend == "coding_plan" {
+        let aliyun_config = config.aliyun.as_ref().ok_or_else(|| LlmError::AuthFailed {
+            provider: "aliyun".to_string(),
+        })?;
+
+        tracing::debug!(
+            model = %aliyun_config.model,
+            base_url = %aliyun_config.base_url,
+            "Using Aliyun Coding Plan provider"
+        );
+
+        return Ok(Arc::new(AliyunProvider::new(aliyun_config.clone())?));
+    }
+
     if config.backend == "openai_codex" {
         return Err(LlmError::RequestFailed {
             provider: "openai_codex".to_string(),
