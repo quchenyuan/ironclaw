@@ -306,6 +306,15 @@ impl LlmConfig {
                 .filter(|s| !s.trim().is_empty())
                 .or(llm_api_key.filter(|s| !s.trim().is_empty()))
                 .map(SecretString::from);
+
+            if api_key.is_none() {
+                return Err(ConfigError::MissingRequired {
+                    key: "ALIYUN_API_KEY".to_string(),
+                    hint: "Set ALIYUN_API_KEY (or LLM_API_KEY as fallback) when LLM_BACKEND=aliyun"
+                        .to_string(),
+                });
+            }
+
             let model = Self::resolve_model("ALIYUN_MODEL", settings, "qwen3.5-plus")?;
             Some(AliyunConfig {
                 model,

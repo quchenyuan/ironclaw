@@ -27,6 +27,8 @@ impl AliyunProvider {
     pub fn new(config: AliyunConfig) -> Result<Self, LlmError> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            // Aliyun DashScope endpoints have known compatibility issues with HTTP/2;
+            // force HTTP/1.1 to avoid request failures.
             .http1_only()
             .build()
             .map_err(|e| LlmError::RequestFailed {
@@ -242,10 +244,29 @@ impl AliyunProvider {
             })?;
 
         let status = response.status();
+
+        let retry_after = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(std::time::Duration::from_secs)
+        } else {
+            None
+        };
+
         let text = response.text().await.map_err(|e| LlmError::RequestFailed {
             provider: "aliyun".to_string(),
             reason: format!("Failed to read response body: {}", e),
         })?;
+
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(LlmError::RateLimited {
+                provider: "aliyun".to_string(),
+                retry_after,
+            });
+        }
 
         if !status.is_success() {
             return Err(LlmError::RequestFailed {
@@ -287,6 +308,11 @@ impl AliyunProvider {
             }
 
             let usage = response.get("usage");
+            if usage.is_none() {
+                tracing::warn!(
+                    "Aliyun response missing usage data — token counts will be reported as 0"
+                );
+            }
             let input_tokens = usage
                 .and_then(|u| u.get("input_tokens").and_then(|i| i.as_u64()))
                 .unwrap_or(0) as u32;
@@ -339,6 +365,11 @@ impl AliyunProvider {
                 .to_string();
 
             let usage = response.get("usage");
+            if usage.is_none() {
+                tracing::warn!(
+                    "Aliyun response missing usage data — token counts will be reported as 0"
+                );
+            }
             let input_tokens = usage
                 .and_then(|u| u.get("prompt_tokens").and_then(|i| i.as_u64()))
                 .unwrap_or(0) as u32;
@@ -377,15 +408,16 @@ impl AliyunProvider {
         response: serde_json::Value,
     ) -> Result<ToolCompletionResponse, LlmError> {
         if let Some(content) = response.get("content").and_then(|c| c.as_array()) {
-            let mut text_content: Option<String> = None;
+            let mut text_parts: Vec<String> = Vec::new();
             let mut tool_calls = Vec::new();
 
             for item in content {
                 if let Some(item_type) = item.get("type").and_then(|t| t.as_str()) {
                     match item_type {
                         "text" => {
-                            text_content =
-                                item.get("text").and_then(|t| t.as_str()).map(String::from);
+                            if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                                text_parts.push(text.to_string());
+                            }
                         }
                         "tool_use" => {
                             if let Some(id) = item.get("id").and_then(|i| i.as_str())
@@ -406,6 +438,11 @@ impl AliyunProvider {
             }
 
             let usage = response.get("usage");
+            if usage.is_none() {
+                tracing::warn!(
+                    "Aliyun response missing usage data — token counts will be reported as 0"
+                );
+            }
             let input_tokens = usage
                 .and_then(|u| u.get("input_tokens").and_then(|i| i.as_u64()))
                 .unwrap_or(0) as u32;
@@ -434,7 +471,11 @@ impl AliyunProvider {
                 .unwrap_or(FinishReason::Unknown);
 
             return Ok(ToolCompletionResponse {
-                content: text_content,
+                content: if text_parts.is_empty() {
+                    None
+                } else {
+                    Some(text_parts.join(""))
+                },
                 tool_calls,
                 input_tokens,
                 output_tokens,
@@ -460,11 +501,39 @@ impl AliyunProvider {
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|tc| {
-                            let arguments_str = tc.get("function")?.get("arguments")?.as_str()?;
-                            let arguments = serde_json::from_str(arguments_str).ok()?;
+                            let id = tc.get("id")?.as_str();
+                            let func_name = tc.get("function")?.get("name")?.as_str();
+                            let arguments_str = tc.get("function")?.get("arguments")?.as_str();
+
+                            let arguments = match arguments_str {
+                                Some(s) => match serde_json::from_str(s) {
+                                    Ok(a) => a,
+                                    Err(e) => {
+                                        tracing::warn!("Aliyun: skipping unparseable tool call arguments: {:?}", e);
+                                        return None;
+                                    }
+                                },
+                                None => {
+                                    tracing::warn!("Aliyun: skipping tool call with missing arguments: {:?}", tc);
+                                    return None;
+                                }
+                            };
+
                             Some(ToolCall {
-                                id: tc.get("id")?.as_str()?.to_string(),
-                                name: tc.get("function")?.get("name")?.as_str()?.to_string(),
+                                id: match id {
+                                    Some(id) => id.to_string(),
+                                    None => {
+                                        tracing::warn!("Aliyun: skipping tool call with missing id: {:?}", tc);
+                                        return None;
+                                    }
+                                },
+                                name: match func_name {
+                                    Some(name) => name.to_string(),
+                                    None => {
+                                        tracing::warn!("Aliyun: skipping tool call with missing function name: {:?}", tc);
+                                        return None;
+                                    }
+                                },
                                 arguments,
                                 reasoning: None,
                             })
@@ -474,6 +543,11 @@ impl AliyunProvider {
                 .unwrap_or_default();
 
             let usage = response.get("usage");
+            if usage.is_none() {
+                tracing::warn!(
+                    "Aliyun response missing usage data — token counts will be reported as 0"
+                );
+            }
             let input_tokens = usage
                 .and_then(|u| u.get("prompt_tokens").and_then(|i| i.as_u64()))
                 .unwrap_or(0) as u32;
