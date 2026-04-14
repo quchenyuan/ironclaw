@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use reqwest::Client;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use rust_decimal::Decimal;
 use secrecy::ExposeSecret;
 
@@ -25,6 +25,12 @@ pub struct AliyunProvider {
 
 impl AliyunProvider {
     pub fn new(config: AliyunConfig) -> Result<Self, LlmError> {
+        if config.api_key.is_none() {
+            return Err(LlmError::AuthFailed {
+                provider: aliyun.to_string(),
+            });
+        }
+
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .http1_only()
@@ -517,7 +523,13 @@ impl LlmProvider for AliyunProvider {
     }
 
     fn cost_per_token(&self) -> (Decimal, Decimal) {
-        costs::model_cost(&self.config.model).unwrap_or_else(costs::default_cost)
+        // Use default cost for unknown models instead of treating them as zero-cost local models
+        let cost = costs::model_cost(&self.config.model);
+        if cost.is_none() || cost.unwrap().0.is_zero() {
+            costs::default_cost()
+        } else {
+            cost.unwrap()
+        }
     }
 
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
