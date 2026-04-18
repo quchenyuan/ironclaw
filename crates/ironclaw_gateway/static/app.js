@@ -1917,6 +1917,7 @@ function enableChatInput() {
   const btn = document.getElementById('send-btn');
   if (input) {
     input.disabled = false;
+    input.placeholder = I18n.t('chat.inputPlaceholder');
   }
   if (btn) btn.disabled = false;
 }
@@ -4220,8 +4221,14 @@ function loadThreads() {
         return;
       }
       if (activeThreadId && threads.some(t => t.id === activeThreadId)) {
-        switchThread(activeThreadId);
-        return;
+        // Skip external-channel threads (e.g. HTTP, Telegram) — they are
+        // read-only in the web UI, so auto-switching to one would leave the
+        // chat input disabled.  Fall through to the assistant thread instead.
+        const activeThread = threads.find(t => t.id === activeThreadId);
+        if (!isReadOnlyChannel(activeThread.channel)) {
+          switchThread(activeThreadId);
+          return;
+        }
       }
       if (assistantThreadId) {
         switchToAssistant();
@@ -7982,9 +7989,13 @@ function fetchGatewayStatus() {
     var popover = document.getElementById('gateway-popover');
     var html = '';
 
-    // Version
+    // Version — show commit hash when not a tagged release
     if (data.version) {
-      html += '<div class="gw-section-label">IronClaw v' + escapeHtml(data.version) + '</div>';
+      var versionText = 'IronClaw v' + escapeHtml(data.version);
+      if (data.commit_hash) {
+        versionText += ' (' + escapeHtml(data.commit_hash) + ')';
+      }
+      html += '<div class="gw-section-label">' + versionText + '</div>';
       html += '<div class="gw-divider"></div>';
     }
 

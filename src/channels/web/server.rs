@@ -4007,18 +4007,15 @@ async fn extensions_setup_submit_handler(
                             .await
                             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
                         {
-                            onboarding_event = AppEvent::OnboardingState {
-                                extension_name: name.clone(),
-                                state:
-                                    crate::channels::web::types::OnboardingStateDto::PairingRequired,
-                                request_id: Some(next_request_id),
-                                message: Some(result.message.clone()),
-                                instructions,
-                                auth_url: None,
-                                setup_url: None,
-                                onboarding,
-                                thread_id: Some(thread_id.to_string()),
-                            };
+                            onboarding_event =
+                                crate::channels::web::types::OnboardingStateDto::pairing_required(
+                                    name.clone(),
+                                    Some(next_request_id),
+                                    Some(thread_id.to_string()),
+                                    Some(result.message.clone()),
+                                    instructions,
+                                    onboarding,
+                                );
                         }
                     }
                     crate::channels::web::onboarding::ConfigureFlowOutcome::Ready => {
@@ -4290,8 +4287,24 @@ async fn gateway_status_handler(
         .map(|v| v.to_lowercase() == "true")
         .unwrap_or(false);
 
+    // Show commit hash when not a tagged release.
+    let commit_hash = {
+        let h = env!("GIT_COMMIT_HASH");
+        if h.is_empty() {
+            None
+        } else {
+            let dirty = env!("GIT_DIRTY") == "true";
+            Some(if dirty {
+                format!("{h}-dirty")
+            } else {
+                h.to_string()
+            })
+        }
+    };
+
     Json(GatewayStatusResponse {
         version: env!("CARGO_PKG_VERSION").to_string(),
+        commit_hash,
         sse_connections,
         ws_connections,
         total_connections: sse_connections + ws_connections,
@@ -4319,6 +4332,8 @@ struct ModelUsageEntry {
 #[derive(serde::Serialize)]
 struct GatewayStatusResponse {
     version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    commit_hash: Option<String>,
     sse_connections: u64,
     ws_connections: u64,
     total_connections: u64,
